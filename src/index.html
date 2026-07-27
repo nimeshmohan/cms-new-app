@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="styles.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Webflow CMS Manager</title>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div id="rate-limit-banner"></div>
+
+    <div class="app-shell">
+      <header class="app-header">
+        <span class="app-logo">W</span>
+        <span class="app-name">Webflow CMS Manager</span>
+      </header>
+
+      <main class="container">
+        <section id="connect-screen" class="screen">
+          <h1>Connect to Webflow</h1>
+          <p class="hint">
+            Paste your Webflow API token (Site settings &rarr; Apps &amp; integrations &rarr; API access).
+            It is validated once, then stored securely in your OS keyring, never in plaintext.
+          </p>
+
+          <form id="token-form">
+            <input
+              id="token-input"
+              type="password"
+              placeholder="Webflow API token"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button id="connect-btn" type="submit">Connect</button>
+          </form>
+
+          <p id="status-msg" class="status"></p>
+        </section>
+
+        <section id="connected-screen" class="screen hidden">
+          <h1>Select a site</h1>
+          <div id="sites-list" class="scroll-list"></div>
+          <button id="disconnect-btn" class="secondary">Disconnect</button>
+        </section>
+
+        <section id="workspace-screen" class="workspace hidden">
+          <aside class="sidebar">
+            <div class="sidebar-head">
+              <h2>CMS Collections</h2>
+            </div>
+            <div id="collections-list" class="sidebar-list scroll-list"></div>
+            <div class="sidebar-footer">
+              <button id="switch-site-btn" class="secondary">Switch site</button>
+              <button id="disconnect-btn-2" class="secondary">Disconnect</button>
+            </div>
+          </aside>
+
+          <section class="main-panel">
+            <div class="main-panel-sticky">
+              <div class="main-panel-head">
+                <h1 id="schema-title">Collection</h1>
+                <div class="toolbar">
+                  <input id="item-search" type="search" placeholder="Search items..." />
+                  <button id="new-item-btn" type="button">+ New item</button>
+                </div>
+              </div>
+              <div id="schema-tabs" class="tabs"></div>
+              <p id="schema-status" class="status"></p>
+              <p id="items-status" class="status"></p>
+            </div>
+
+            <div class="table-wrap">
+              <table id="items-table" class="items-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Published</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Modified</th>
+                  </tr>
+                </thead>
+                <tbody id="items-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="item-modal">
+      <div class="modal-head">
+        <h2 id="form-heading">New item</h2>
+        <button id="modal-close-btn" type="button" class="icon-btn" aria-label="Close">&times;</button>
+      </div>
+      <form id="dynamic-form" class="dynamic-form"></form>
+      <div class="form-actions">
+        <button id="save-draft-btn" type="button">Save as Draft</button>
+        <button id="publish-btn" type="button">Publish</button>
+      </div>
+      <p id="form-status" class="status"></p>
+    </dialog>
+  </body>
+</html>

@@ -14,6 +14,20 @@ function itemDisplayName(item) {
   return fd.name || fd.title || fd.slug || item.id;
 }
 
+const HTML_TAG_RE = /<[a-z][\s\S]*>/i;
+
+function escapeHtml(text) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function ensureRichTextHtml(value) {
+  if (!value) return value;
+  return HTML_TAG_RE.test(value) ? value : `<p>${escapeHtml(value)}</p>`;
+}
+
 async function buildInput(field, value, context) {
   const type = (field.type || "").toLowerCase();
   let el;
@@ -35,7 +49,7 @@ async function buildInput(field, value, context) {
     case "richtext":
       el = document.createElement("textarea");
       el.rows = 6;
-      el.placeholder = "HTML content";
+      el.placeholder = "Plain text or HTML";
       if (value) el.value = value;
       break;
 
@@ -91,20 +105,23 @@ async function buildInput(field, value, context) {
 
     case "image":
       el = document.createElement("input");
-      el.type = "file";
-      el.accept = "image/*";
+      el.type = "url";
+      el.placeholder = "Image URL (https://...)";
+      if (value?.url) el.value = value.url;
       break;
 
     case "multiimage":
       el = document.createElement("input");
-      el.type = "file";
-      el.accept = "image/*";
-      el.multiple = true;
+      el.type = "text";
+      el.placeholder = "Image URLs, comma-separated";
+      if (Array.isArray(value)) el.value = value.map((v) => v.url).join(", ");
       break;
 
     case "file":
       el = document.createElement("input");
-      el.type = "file";
+      el.type = "url";
+      el.placeholder = "File URL (https://...)";
+      if (value?.url) el.value = value.url;
       break;
 
     case "reference": {
@@ -187,12 +204,20 @@ function readFieldValue(field, el) {
       return el.checked;
     case "number":
       return el.value === "" ? null : Number(el.value);
+    case "richtext":
+      return el.value === "" ? null : ensureRichTextHtml(el.value);
     case "multireference":
       return Array.from(el.selectedOptions).map((o) => o.value);
     case "image":
-    case "multiimage":
     case "file":
-      return el.files && el.files.length ? Array.from(el.files).map((f) => f.name) : null;
+      return el.value === "" ? null : { url: el.value };
+    case "multiimage": {
+      const urls = el.value
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return urls.length ? urls.map((url) => ({ url })) : null;
+    }
     default:
       return el.value === "" ? null : el.value;
   }
@@ -203,7 +228,10 @@ export function readFormValues(container, schema) {
   for (const field of schema.fields) {
     const el = container.querySelector(`[data-field-slug="${CSS.escape(field.slug)}"]`);
     if (!el) continue;
-    values[field.slug] = readFieldValue(field, el);
+    const value = readFieldValue(field, el);
+    if (value !== null) {
+      values[field.slug] = value;
+    }
   }
   return values;
 }

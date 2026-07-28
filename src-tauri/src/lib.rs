@@ -322,6 +322,157 @@ async fn publish_item(app: tauri::AppHandle, collection_id: String, item_id: Str
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AssetUploadMeta {
+    id: String,
+    upload_url: String,
+    upload_details: serde_json::Map<String, serde_json::Value>,
+    #[serde(default)]
+    hosted_url: Option<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedAsset {
+    pub file_id: String,
+    pub url: String,
+}
+
+fn guess_mime(file_name: &str) -> &'static str {
+    let ext = file_name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+#[tauri::command]
+async fn upload_asset(
+    app: tauri::AppHandle,
+    site_id: String,
+    file_path: String,
+) -> Result<UploadedAsset, String> {
+    let token = get_token()?;
+
+    let bytes = std::fs::read(&file_path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let file_name = std::path::Path::new(&file_path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "upload".to_string());
+
+    let hash = format!("{:x}", md5::compute(&bytes));
+
+    let meta_url = format!("https://api.webflow.com/v2/sites/{site_id}/assets");
+    let meta_body = serde_json::json!({ "fileName": file_name, "fileHash": hash });
+    let meta: AssetUploadMeta = webflow_post(&app, &token, &meta_url, &meta_body).await?;
+
+    let mut form = reqwest::multipart::Form::new();
+    for (key, value) in &meta.upload_details {
+        let value_str = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+        form = form.text(key.clone(), value_str);
+    }
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(file_name.clone())
+        .mime_str(guess_mime(&file_name))
+        .map_err(|e| format!("Invalid file type: {e}"))?;
+    form = form.part("file", part);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&meta.upload_url)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("Asset upload failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Asset storage rejected upload ({status}): {body}"));
+    }
+
+    Ok(UploadedAsset {
+        file_id: meta.id,
+        url: meta.hosted_url.unwrap_or_default(),
+    })
+}
+
+#[cfg(windows)]
+mod native_file_picker {
+    use windows_sys::Win32::UI::Controls::Dialogs::{
+        GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST,
+        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    };
+
+    pub fn pick_files(images: bool, multiple: bool) -> Result<Vec<String>, String> {
+        let filter: &str = if images {
+            "Image Files\0*.png;*.jpg;*.jpeg;*.gif;*.webp;*.svg\0All Files\0*.*\0\0"
+        } else {
+            "All Files\0*.*\0\0"
+        };
+        let mut filter_wide: Vec<u16> = filter.encode_utf16().collect();
+
+        const BUF_SIZE: usize = 32768;
+        let mut buffer: Vec<u16> = vec![0; BUF_SIZE];
+
+        let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
+        ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
+        ofn.lpstrFilter = filter_wide.as_mut_ptr();
+        ofn.lpstrFile = buffer.as_mut_ptr();
+        ofn.nMaxFile = BUF_SIZE as u32;
+        let mut flags = OFN_EXPLORER | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        if multiple {
+            flags |= OFN_ALLOWMULTISELECT;
+        }
+        ofn.Flags = flags;
+
+        let ok = unsafe { GetOpenFileNameW(&mut ofn) };
+        if ok == 0 {
+            return Ok(vec![]);
+        }
+
+        let mut parts: Vec<String> = Vec::new();
+        let mut start = 0usize;
+        for i in 0..buffer.len() {
+            if buffer[i] == 0 {
+                if i == start {
+                    break;
+                }
+                parts.push(String::from_utf16_lossy(&buffer[start..i]));
+                start = i + 1;
+            }
+        }
+
+        if parts.is_empty() {
+            return Ok(vec![]);
+        }
+        if parts.len() == 1 {
+            return Ok(parts);
+        }
+
+        let dir = parts[0].clone();
+        Ok(parts[1..].iter().map(|f| format!("{dir}\\{f}")).collect())
+    }
+}
+
+#[cfg(not(windows))]
+mod native_file_picker {
+    pub fn pick_files(_images: bool, _multiple: bool) -> Result<Vec<String>, String> {
+        Err("File picker isn't implemented on this OS yet.".to_string())
+    }
+}
+
+#[tauri::command]
+fn pick_files(images: bool, multiple: bool) -> Result<Vec<String>, String> {
+    native_file_picker::pick_files(images, multiple)
+}
+
 #[tauri::command]
 fn disconnect() -> Result<(), String> {
     let entry = keyring_entry()?;
@@ -345,7 +496,9 @@ pub fn run() {
             get_items,
             create_item,
             update_item,
-            publish_item
+            publish_item,
+            upload_asset,
+            pick_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

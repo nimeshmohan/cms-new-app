@@ -237,10 +237,21 @@ async function loadItems(collectionId) {
   }
 }
 
+async function pickFile({ multiple, images }) {
+  return invoke("pick_files", { images: Boolean(images), multiple: Boolean(multiple) });
+}
+
+async function uploadAsset(filePath) {
+  const siteId = localStorage.getItem(SITE_ID_KEY);
+  return invoke("upload_asset", { siteId, filePath });
+}
+
 async function renderForm(schema, initialValues = {}) {
   dynamicForm.innerHTML = "";
   const form = await buildDynamicForm(schema, initialValues, {
     getReferencedItems: (collectionId) => getItemsCached(collectionId),
+    pickFile,
+    uploadAsset,
   });
   dynamicForm.appendChild(form);
 }

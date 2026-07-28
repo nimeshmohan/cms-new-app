@@ -1,4 +1,5 @@
 import { buildDynamicForm, readFormValues } from "./field-renderer.js";
+import accessPolicy from "./access-policy.json";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -78,6 +79,23 @@ function readCachedCollections(siteId) {
   }
 }
 
+const LOCKED_NAMES = new Set(
+  (accessPolicy.lockedCollectionNames || []).map((n) => n.toLowerCase())
+);
+
+function isLocked(collection) {
+  if (!collection) return false;
+  return (
+    LOCKED_NAMES.has((collection.displayName || "").toLowerCase()) ||
+    LOCKED_NAMES.has((collection.slug || "").toLowerCase())
+  );
+}
+
+function isLockedId(collectionId) {
+  const collection = currentCollections.find((c) => c.id === collectionId);
+  return isLocked(collection);
+}
+
 function renderSidebar(collections) {
   collectionsList.innerHTML = "";
   if (collections.length === 0) {
@@ -88,6 +106,13 @@ function renderSidebar(collections) {
     const item = document.createElement("div");
     item.className = "sidebar-item" + (c.id === currentCollectionId ? " active" : "");
     item.textContent = c.displayName;
+    if (isLocked(c)) {
+      const lock = document.createElement("span");
+      lock.className = "lock-icon";
+      lock.textContent = "🔒";
+      lock.title = "Locked: view only";
+      item.appendChild(lock);
+    }
     item.addEventListener("click", () => selectCollection(c));
     collectionsList.appendChild(item);
   }
@@ -165,6 +190,16 @@ async function getItemsCached(collectionId, { forceRefresh = false } = {}) {
   return items;
 }
 
+const LOCK_MESSAGE = "You don't have permission to edit or create items in this collection.";
+
+function guardedOpenItemModal(item) {
+  if (isLockedId(currentCollectionId)) {
+    setStatus(itemsStatus, LOCK_MESSAGE, "error");
+    return;
+  }
+  openItemModal(item);
+}
+
 function renderItemsTable(items) {
   itemsTbody.innerHTML = "";
   if (items.length === 0) {
@@ -179,7 +214,7 @@ function renderItemsTable(items) {
   }
   for (const item of items) {
     const row = document.createElement("tr");
-    row.addEventListener("click", () => openItemModal(item));
+    row.addEventListener("click", () => guardedOpenItemModal(item));
 
     const nameCell = document.createElement("td");
     nameCell.textContent = itemDisplayName(item);
@@ -505,7 +540,7 @@ window.addEventListener("DOMContentLoaded", () => {
   disconnectBtn.addEventListener("click", handleDisconnect);
   disconnectBtn2.addEventListener("click", handleDisconnect);
   switchSiteBtn.addEventListener("click", handleSwitchSite);
-  newItemBtn.addEventListener("click", () => openItemModal(null));
+  newItemBtn.addEventListener("click", () => guardedOpenItemModal(null));
   saveDraftBtn.addEventListener("click", () => handleSaveItem(false));
   publishBtn.addEventListener("click", () => handleSaveItem(true));
   modalCloseBtn.addEventListener("click", closeItemModal);

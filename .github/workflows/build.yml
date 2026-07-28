@@ -2,7 +2,7 @@ name: Build Windows Installer
 
 on:
   push:
-    branches: [main]
+    branches: [main, "client-*"]
   workflow_dispatch:
 
 permissions:
@@ -35,8 +35,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: app-v__VERSION__
-          releaseName: "Webflow CMS Manager v__VERSION__"
+          tagName: ${{ github.ref_name }}-v__VERSION__
+          releaseName: "Webflow CMS Manager (${{ github.ref_name }}) v__VERSION__"
           releaseBody: "Windows installer built automatically by GitHub Actions."
           releaseDraft: true
           prerelease: false

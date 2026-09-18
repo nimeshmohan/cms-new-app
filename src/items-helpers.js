@@ -71,3 +71,22 @@ export function sortItems(items, sortState) {
     return 0;
   });
 }
+
+export function relativeTimeFromNow(iso, now = Date.now()) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return "";
+
+  const diffSec = Math.round(Math.max(0, now - t) / 1000);
+  if (diffSec < 10) return "just now";
+  if (diffSec < 60) return `${diffSec}s ago`;
+
+  const diffMin = Math.round(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m ago`;
+
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+
+  const diffDay = Math.round(diffHr / 24);
+  return `${diffDay}d ago`;
+}

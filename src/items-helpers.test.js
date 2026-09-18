@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { filterItemsByQuery, computePagination, paginateItems, sortItems, toggleSortState } from "./items-helpers.js";
+import {
+  filterItemsByQuery,
+  computePagination,
+  paginateItems,
+  sortItems,
+  toggleSortState,
+  relativeTimeFromNow,
+} from "./items-helpers.js";
 
 function makeItems(count) {
   return Array.from({ length: count }, (_, i) => ({
@@ -153,5 +160,31 @@ describe("sortItems", () => {
     const result = sortItems(items, { key: "created", direction: "asc" });
     expect(result[0].id).toBe("c"); // null createdOn sorts first (treated as -Infinity)
     expect(result.map((i) => i.id)).toEqual(["c", "b", "a"]);
+  });
+});
+
+describe("relativeTimeFromNow", () => {
+  const NOW = new Date("2026-09-18T12:00:00Z").getTime();
+
+  it("returns an empty string for a missing or invalid timestamp", () => {
+    expect(relativeTimeFromNow(null, NOW)).toBe("");
+    expect(relativeTimeFromNow(undefined, NOW)).toBe("");
+    expect(relativeTimeFromNow("not-a-date", NOW)).toBe("");
+  });
+
+  it('reports "just now" for anything under 10 seconds', () => {
+    expect(relativeTimeFromNow(new Date(NOW).toISOString(), NOW)).toBe("just now");
+    expect(relativeTimeFromNow(new Date(NOW - 9000).toISOString(), NOW)).toBe("just now");
+  });
+
+  it("reports seconds, minutes, hours, and days at the right boundaries", () => {
+    expect(relativeTimeFromNow(new Date(NOW - 45 * 1000).toISOString(), NOW)).toBe("45s ago");
+    expect(relativeTimeFromNow(new Date(NOW - 5 * 60 * 1000).toISOString(), NOW)).toBe("5m ago");
+    expect(relativeTimeFromNow(new Date(NOW - 3 * 60 * 60 * 1000).toISOString(), NOW)).toBe("3h ago");
+    expect(relativeTimeFromNow(new Date(NOW - 2 * 24 * 60 * 60 * 1000).toISOString(), NOW)).toBe("2d ago");
+  });
+
+  it("never reports a negative duration for a timestamp slightly in the future", () => {
+    expect(relativeTimeFromNow(new Date(NOW + 5000).toISOString(), NOW)).toBe("just now");
   });
 });

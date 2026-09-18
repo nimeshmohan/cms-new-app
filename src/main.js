@@ -6,6 +6,7 @@ import {
   paginateItems,
   sortItems,
   toggleSortState,
+  relativeTimeFromNow,
 } from "./items-helpers.js";
 import accessPolicy from "./access-policy.json";
 
@@ -20,7 +21,7 @@ const SCHEMA_CACHE_PREFIX = "webflow_cache_schema_";
 let tokenForm, tokenInput, connectBtn, statusMsg;
 let connectScreen, connectedScreen, sitesList, disconnectBtn;
 let workspaceScreen, collectionsList, switchSiteBtn, disconnectBtn2;
-let schemaTitle, schemaTabs, schemaStatus, itemsStatus;
+let schemaTitle, schemaTabs, schemaStatus, itemsStatus, lastSyncedEl;
 let itemSearchInput, newItemBtn, itemsTbody;
 let dynamicForm, formHeading, saveDraftBtn, publishBtn, formStatus;
 let itemModal, modalCloseBtn;
@@ -40,12 +41,29 @@ let itemsPage = 1;
 let sortState = { key: null, direction: "asc" };
 let selectedItemIds = new Set();
 let formSnapshot = null;
+let lastSyncedAt = null;
 const ITEMS_PER_PAGE = 50;
 const itemsCache = new Map();
 
 function setStatus(el, message, kind) {
   el.textContent = message || "";
   el.className = "status" + (kind ? ` ${kind}` : "");
+}
+
+function renderLastSynced() {
+  if (!lastSyncedAt) {
+    lastSyncedEl.textContent = "";
+    lastSyncedEl.title = "";
+    return;
+  }
+  lastSyncedEl.textContent = `Synced ${relativeTimeFromNow(lastSyncedAt)}`;
+  lastSyncedEl.title = new Date(lastSyncedAt).toLocaleString();
+}
+
+function setLastSynced(iso) {
+  if (!iso) return;
+  lastSyncedAt = iso;
+  renderLastSynced();
 }
 
 function showScreen(screen) {
@@ -137,7 +155,10 @@ function renderSidebar(collections) {
 
 function cacheSchemaBundle(collectionId, bundle) {
   try {
-    localStorage.setItem(SCHEMA_CACHE_PREFIX + collectionId, JSON.stringify(bundle));
+    localStorage.setItem(
+      SCHEMA_CACHE_PREFIX + collectionId,
+      JSON.stringify({ bundle, cachedAt: new Date().toISOString() })
+    );
   } catch (err) {
     console.error("Failed to cache schema:", err);
   }
@@ -146,7 +167,10 @@ function cacheSchemaBundle(collectionId, bundle) {
 function readCachedSchemaBundle(collectionId) {
   try {
     const raw = localStorage.getItem(SCHEMA_CACHE_PREFIX + collectionId);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // Older cache entries stored the bundle directly with no wrapper.
+    return parsed && parsed.bundle ? parsed : { bundle: parsed, cachedAt: null };
   } catch {
     return null;
   }
@@ -400,6 +424,7 @@ async function loadItems(collectionId) {
     const items = await getItemsCached(collectionId, { forceRefresh: true });
     currentItems = items;
     setStatus(itemsStatus, items.length === 0 ? "" : `${items.length} item${items.length === 1 ? "" : "s"} loaded.`, "");
+    setLastSynced(new Date().toISOString());
     renderItemsTable(items);
   } catch (err) {
     setStatus(itemsStatus, String(err), "error");
@@ -505,10 +530,14 @@ async function selectCollection(collection) {
   schemaTabs.innerHTML = "";
   renderSidebar(currentCollections);
 
+  lastSyncedAt = null;
+  renderLastSynced();
+
   const cached = readCachedSchemaBundle(collection.id);
   if (cached) {
-    currentSchemaBundle = cached;
-    renderSchemaTabs(cached);
+    currentSchemaBundle = cached.bundle;
+    renderSchemaTabs(cached.bundle);
+    setLastSynced(cached.cachedAt);
     setStatus(schemaStatus, "Showing cached schema, refreshing...", "loading");
   } else {
     setStatus(schemaStatus, "Loading schema...", "loading");
@@ -523,6 +552,7 @@ async function selectCollection(collection) {
     setStatus(schemaStatus, "", "");
     renderSchemaTabs(bundle);
     cacheSchemaBundle(collection.id, bundle);
+    setLastSynced(new Date().toISOString());
   } catch (err) {
     setStatus(schemaStatus, String(err), "error");
   }
@@ -675,6 +705,7 @@ window.addEventListener("DOMContentLoaded", () => {
   switchSiteBtn = document.querySelector("#switch-site-btn");
   disconnectBtn2 = document.querySelector("#disconnect-btn-2");
   schemaTitle = document.querySelector("#schema-title");
+  lastSyncedEl = document.querySelector("#last-synced");
   schemaTabs = document.querySelector("#schema-tabs");
   schemaStatus = document.querySelector("#schema-status");
   itemsStatus = document.querySelector("#items-status");
@@ -720,6 +751,7 @@ window.addEventListener("DOMContentLoaded", () => {
   itemsSelectAllCheckbox.addEventListener("change", handleSelectAllOnPage);
   bulkPublishBtn.addEventListener("click", handleBulkPublish);
   bulkClearBtn.addEventListener("click", handleBulkClear);
+  setInterval(renderLastSynced, 30000);
 
   tryAutoReconnect();
 });

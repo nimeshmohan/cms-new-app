@@ -1,4 +1,4 @@
-function toDatetimeLocalValue(value) {
+export function toDatetimeLocalValue(value) {
   try {
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return "";
@@ -9,18 +9,18 @@ function toDatetimeLocalValue(value) {
   }
 }
 
-function itemDisplayName(item) {
+export function itemDisplayName(item) {
   const fd = item.fieldData || {};
   return fd.name || fd.title || fd.slug || item.id;
 }
 
-function normalizeRichTextHtml(html) {
+export function normalizeRichTextHtml(html) {
   const trimmed = html.trim();
   if (trimmed === "" || trimmed === "<br>") return null;
   return /^</.test(trimmed) ? trimmed : `<p>${trimmed}</p>`;
 }
 
-function filenameFromUrl(url) {
+export function filenameFromUrl(url) {
   try {
     return decodeURIComponent(url.split("/").pop().split("?")[0]);
   } catch {
@@ -28,7 +28,7 @@ function filenameFromUrl(url) {
   }
 }
 
-function describeAssetValue(value, multiple) {
+export function describeAssetValue(value, multiple) {
   if (multiple) {
     return Array.isArray(value) && value.length ? `${value.length} file(s) selected` : "No files chosen";
   }
@@ -404,7 +404,7 @@ export async function buildDynamicForm(schema, initialValues = {}, context = {})
   return container;
 }
 
-function readFieldValue(field, el) {
+export function readFieldValue(field, el) {
   const type = (field.type || "").toLowerCase();
   switch (type) {
     case "switch":

@@ -37,7 +37,9 @@ where
     loop {
         let resp = build_request().await.map_err(describe_network_error)?;
 
-        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES {
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+            && attempt < MAX_RATE_LIMIT_RETRIES
+        {
             let wait_secs = resp
                 .headers()
                 .get("Retry-After")
@@ -91,6 +93,21 @@ struct WebflowErrorBody {
     message: Option<String>,
 }
 
+fn format_webflow_error(status: reqwest::StatusCode, body: &str) -> String {
+    let message = serde_json::from_str::<WebflowErrorBody>(body)
+        .ok()
+        .and_then(|e| e.message)
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| {
+            if body.trim().is_empty() {
+                "No further details were provided.".to_string()
+            } else {
+                body.to_string()
+            }
+        });
+    format!("Webflow rejected the request ({status}): {message}")
+}
+
 async fn handle_response<T: serde::de::DeserializeOwned>(
     resp: reqwest::Response,
 ) -> Result<T, String> {
@@ -100,18 +117,7 @@ async fn handle_response<T: serde::de::DeserializeOwned>(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        let message = serde_json::from_str::<WebflowErrorBody>(&body)
-            .ok()
-            .and_then(|e| e.message)
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| {
-                if body.trim().is_empty() {
-                    "No further details were provided.".to_string()
-                } else {
-                    body.clone()
-                }
-            });
-        return Err(format!("Webflow rejected the request ({status}): {message}"));
+        return Err(format_webflow_error(status, &body));
     }
     resp.json::<T>()
         .await
@@ -125,7 +131,10 @@ async fn webflow_post<T: serde::de::DeserializeOwned>(
     url: &str,
     body: &serde_json::Value,
 ) -> Result<T, String> {
-    send_with_rate_limit_retry(app, || client.post(url).bearer_auth(token).json(body).send()).await
+    send_with_rate_limit_retry(app, || {
+        client.post(url).bearer_auth(token).json(body).send()
+    })
+    .await
 }
 
 async fn webflow_patch<T: serde::de::DeserializeOwned>(
@@ -135,8 +144,10 @@ async fn webflow_patch<T: serde::de::DeserializeOwned>(
     url: &str,
     body: &serde_json::Value,
 ) -> Result<T, String> {
-    send_with_rate_limit_retry(app, || client.patch(url).bearer_auth(token).json(body).send())
-        .await
+    send_with_rate_limit_retry(app, || {
+        client.patch(url).bearer_auth(token).json(body).send()
+    })
+    .await
 }
 
 async fn fetch_sites(
@@ -328,6 +339,17 @@ struct ItemsResponse {
 
 const ITEMS_PAGE_SIZE: u64 = 100;
 
+/// Given the page just fetched, decides whether another page is needed and,
+/// if so, what offset to fetch it at. `None` means pagination is complete.
+fn next_items_offset(current_offset: u64, page_size: u64, fetched: u64, total: u64) -> Option<u64> {
+    let next = current_offset + page_size;
+    if fetched == 0 || next >= total {
+        None
+    } else {
+        Some(next)
+    }
+}
+
 #[tauri::command]
 async fn get_items(
     app: tauri::AppHandle,
@@ -344,12 +366,12 @@ async fn get_items(
         );
         let parsed: ItemsResponse = webflow_get(&app, &client, &token, &url).await?;
         let fetched = parsed.items.len() as u64;
+        let total = parsed.pagination.total;
         all_items.extend(parsed.items);
 
-        offset += ITEMS_PAGE_SIZE;
-        let total = parsed.pagination.total;
-        if fetched == 0 || offset >= total {
-            break;
+        match next_items_offset(offset, ITEMS_PAGE_SIZE, fetched, total) {
+            Some(next_offset) => offset = next_offset,
+            None => break,
         }
     }
 
@@ -459,7 +481,10 @@ async fn upload_asset(
 
     let mut form = reqwest::multipart::Form::new();
     for (key, value) in &meta.upload_details {
-        let value_str = value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string());
+        let value_str = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
         form = form.text(key.clone(), value_str);
     }
     let part = reqwest::multipart::Part::bytes(bytes)
@@ -483,7 +508,9 @@ async fn upload_asset(
         } else {
             body
         };
-        return Err(format!("Asset storage rejected the upload ({status}): {detail}"));
+        return Err(format!(
+            "Asset storage rejected the upload ({status}): {detail}"
+        ));
     }
 
     Ok(UploadedAsset {
@@ -495,8 +522,8 @@ async fn upload_asset(
 #[cfg(windows)]
 mod native_file_picker {
     use windows_sys::Win32::UI::Controls::Dialogs::{
-        GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST,
-        OFN_PATHMUSTEXIST, OPENFILENAMEW,
+        GetOpenFileNameW, OFN_ALLOWMULTISELECT, OFN_EXPLORER, OFN_FILEMUSTEXIST, OFN_PATHMUSTEXIST,
+        OPENFILENAMEW,
     };
 
     pub fn pick_files(images: bool, multiple: bool) -> Result<Vec<String>, String> {
@@ -592,4 +619,116 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guess_mime_known_extensions() {
+        assert_eq!(guess_mime("photo.PNG"), "image/png");
+        assert_eq!(guess_mime("doc.pdf"), "application/pdf");
+        assert_eq!(guess_mime("archive.zip"), "application/octet-stream");
+        assert_eq!(guess_mime("noext"), "application/octet-stream");
+    }
+
+    fn field(id: &str, field_type: &str, collection_id: Option<&str>) -> CollectionField {
+        CollectionField {
+            id: id.to_string(),
+            is_editable: true,
+            is_required: false,
+            field_type: field_type.to_string(),
+            slug: id.to_string(),
+            display_name: id.to_string(),
+            help_text: None,
+            validations: collection_id.map(|cid| serde_json::json!({ "collectionId": cid })),
+        }
+    }
+
+    #[test]
+    fn referenced_collection_ids_collects_reference_and_multireference_fields() {
+        let schema = CollectionSchema {
+            id: "main".to_string(),
+            display_name: "Main".to_string(),
+            singular_name: None,
+            slug: None,
+            fields: vec![
+                field("f1", "PlainText", None),
+                field("f2", "Reference", Some("authors")),
+                field("f3", "MultiReference", Some("tags")),
+                field("f4", "Reference", Some("main")),
+                field("f5", "Reference", Some("authors")),
+            ],
+        };
+
+        let ids = referenced_collection_ids(&schema);
+        assert_eq!(ids, vec!["authors".to_string(), "tags".to_string()]);
+    }
+
+    #[test]
+    fn referenced_collection_ids_ignores_fields_without_a_collection_id() {
+        let schema = CollectionSchema {
+            id: "main".to_string(),
+            display_name: "Main".to_string(),
+            singular_name: None,
+            slug: None,
+            fields: vec![field("f1", "Reference", None)],
+        };
+        assert!(referenced_collection_ids(&schema).is_empty());
+    }
+
+    #[test]
+    fn format_webflow_error_extracts_message_from_json_body() {
+        let body = r#"{"message": "Name is required", "code": "validation_error"}"#;
+        let msg = format_webflow_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert_eq!(
+            msg,
+            "Webflow rejected the request (400 Bad Request): Name is required"
+        );
+    }
+
+    #[test]
+    fn format_webflow_error_falls_back_to_raw_body_when_not_json() {
+        let msg = format_webflow_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "upstream timeout",
+        );
+        assert_eq!(
+            msg,
+            "Webflow rejected the request (500 Internal Server Error): upstream timeout"
+        );
+    }
+
+    #[test]
+    fn format_webflow_error_handles_empty_body() {
+        let msg = format_webflow_error(reqwest::StatusCode::FORBIDDEN, "");
+        assert_eq!(
+            msg,
+            "Webflow rejected the request (403 Forbidden): No further details were provided."
+        );
+    }
+
+    #[test]
+    fn next_items_offset_continues_while_more_pages_remain() {
+        assert_eq!(next_items_offset(0, 100, 100, 250), Some(100));
+        assert_eq!(next_items_offset(100, 100, 100, 250), Some(200));
+        assert_eq!(next_items_offset(200, 100, 50, 250), None);
+    }
+
+    #[test]
+    fn next_items_offset_stops_on_exact_multiple_boundary() {
+        assert_eq!(next_items_offset(0, 100, 100, 200), Some(100));
+        assert_eq!(next_items_offset(100, 100, 100, 200), None);
+    }
+
+    #[test]
+    fn next_items_offset_stops_immediately_on_empty_page() {
+        assert_eq!(next_items_offset(0, 100, 0, 250), None);
+    }
+
+    #[test]
+    fn next_items_offset_stops_when_collection_is_smaller_than_one_page() {
+        assert_eq!(next_items_offset(0, 100, 12, 12), None);
+    }
 }

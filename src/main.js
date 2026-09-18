@@ -1,4 +1,5 @@
-import { buildDynamicForm, readFormValues } from "./field-renderer.js";
+import { buildDynamicForm, readFormValues, itemDisplayName } from "./field-renderer.js";
+import { formatDate, filterItemsByQuery, computePagination, paginateItems } from "./items-helpers.js";
 import accessPolicy from "./access-policy.json";
 
 const { invoke } = window.__TAURI__.core;
@@ -167,24 +168,6 @@ function activeSchema() {
   return allSchemasInBundle(currentSchemaBundle).find((s) => s.id === activeSchemaId) || null;
 }
 
-function itemDisplayName(item) {
-  const fd = item.fieldData || {};
-  return fd.name || fd.title || fd.slug || item.id;
-}
-
-function formatDate(iso) {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 async function getItemsCached(collectionId, { forceRefresh = false } = {}) {
   if (!forceRefresh && itemsCache.has(collectionId)) {
     return itemsCache.get(collectionId);
@@ -205,8 +188,8 @@ function guardedOpenItemModal(item) {
 }
 
 function renderPaginationControls(totalItems) {
-  const totalPages = Math.max(1, Math.ceil(totalItems / ITEMS_PER_PAGE));
-  if (itemsPage > totalPages) itemsPage = totalPages;
+  const { page, start, end, hasPrev, hasNext } = computePagination(totalItems, itemsPage, ITEMS_PER_PAGE);
+  itemsPage = page;
 
   if (totalItems === 0) {
     itemsPagination.classList.add("hidden");
@@ -214,11 +197,9 @@ function renderPaginationControls(totalItems) {
   }
 
   itemsPagination.classList.remove("hidden");
-  const start = (itemsPage - 1) * ITEMS_PER_PAGE + 1;
-  const end = Math.min(itemsPage * ITEMS_PER_PAGE, totalItems);
   itemsPageInfo.textContent = `${start}–${end} of ${totalItems}`;
-  itemsPrevBtn.disabled = itemsPage <= 1;
-  itemsNextBtn.disabled = itemsPage >= totalPages;
+  itemsPrevBtn.disabled = !hasPrev;
+  itemsNextBtn.disabled = !hasNext;
 }
 
 function renderItemsTable(items) {
@@ -240,8 +221,7 @@ function renderItemsTable(items) {
     return;
   }
 
-  const start = (itemsPage - 1) * ITEMS_PER_PAGE;
-  const pageItems = items.slice(start, start + ITEMS_PER_PAGE);
+  const pageItems = paginateItems(items, itemsPage, ITEMS_PER_PAGE);
   for (const item of pageItems) {
     const row = document.createElement("tr");
     row.addEventListener("click", () => guardedOpenItemModal(item));
@@ -281,10 +261,7 @@ function renderItemsTable(items) {
 }
 
 function applyItemSearch({ resetPage = true } = {}) {
-  const query = itemSearchInput.value.trim().toLowerCase();
-  const filtered = query
-    ? currentItems.filter((item) => itemDisplayName(item).toLowerCase().includes(query))
-    : currentItems;
+  const filtered = filterItemsByQuery(currentItems, itemSearchInput.value);
   if (resetPage) itemsPage = 1;
   renderItemsTable(filtered);
 }

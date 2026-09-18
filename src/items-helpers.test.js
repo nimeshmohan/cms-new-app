@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterItemsByQuery, computePagination, paginateItems } from "./items-helpers.js";
+import { filterItemsByQuery, computePagination, paginateItems, sortItems, toggleSortState } from "./items-helpers.js";
 
 function makeItems(count) {
   return Array.from({ length: count }, (_, i) => ({
@@ -95,5 +95,63 @@ describe("paginateItems", () => {
   it("clamps an out-of-range page to the last page's items", () => {
     const items = makeItems(151);
     expect(paginateItems(items, 999, 50)).toEqual(paginateItems(items, 4, 50));
+  });
+});
+
+describe("toggleSortState", () => {
+  it("sorts ascending when a new column is clicked", () => {
+    expect(toggleSortState({ key: null, direction: "asc" }, "name")).toEqual({
+      key: "name",
+      direction: "asc",
+    });
+    expect(toggleSortState({ key: "created", direction: "desc" }, "name")).toEqual({
+      key: "name",
+      direction: "asc",
+    });
+  });
+
+  it("flips direction when the same column is clicked again", () => {
+    expect(toggleSortState({ key: "name", direction: "asc" }, "name")).toEqual({
+      key: "name",
+      direction: "desc",
+    });
+    expect(toggleSortState({ key: "name", direction: "desc" }, "name")).toEqual({
+      key: "name",
+      direction: "asc",
+    });
+  });
+});
+
+describe("sortItems", () => {
+  const items = [
+    { id: "b", fieldData: { name: "Banana" }, isDraft: false, createdOn: "2026-01-02T00:00:00Z" },
+    { id: "a", fieldData: { name: "Apple" }, isDraft: true, createdOn: "2026-01-03T00:00:00Z" },
+    { id: "c", fieldData: { name: "Cherry" }, isDraft: false, createdOn: null },
+  ];
+
+  it("returns the items unchanged when no sort key is set", () => {
+    expect(sortItems(items, { key: null, direction: "asc" })).toEqual(items);
+    expect(sortItems(items, null)).toEqual(items);
+  });
+
+  it("does not mutate the input array", () => {
+    const copy = [...items];
+    sortItems(items, { key: "name", direction: "asc" });
+    expect(items).toEqual(copy);
+  });
+
+  it("sorts by name alphabetically, and reverses on desc", () => {
+    expect(sortItems(items, { key: "name", direction: "asc" }).map((i) => i.id)).toEqual(["a", "b", "c"]);
+    expect(sortItems(items, { key: "name", direction: "desc" }).map((i) => i.id)).toEqual(["c", "b", "a"]);
+  });
+
+  it("sorts drafts before published items alphabetically by status label", () => {
+    expect(sortItems(items, { key: "status", direction: "asc" }).map((i) => i.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("treats a missing date as the oldest value instead of throwing", () => {
+    const result = sortItems(items, { key: "created", direction: "asc" });
+    expect(result[0].id).toBe("c"); // null createdOn sorts first (treated as -Infinity)
+    expect(result.map((i) => i.id)).toEqual(["c", "b", "a"]);
   });
 });

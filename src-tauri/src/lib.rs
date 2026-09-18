@@ -428,6 +428,23 @@ async fn publish_item(
     Ok(())
 }
 
+#[tauri::command]
+async fn publish_items(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+    collection_id: String,
+    item_ids: Vec<String>,
+) -> Result<(), String> {
+    if item_ids.is_empty() {
+        return Ok(());
+    }
+    let token = get_token()?;
+    let url = format!("https://api.webflow.com/v2/collections/{collection_id}/items/publish");
+    let body = serde_json::json!({ "itemIds": item_ids });
+    let _: serde_json::Value = webflow_post(&app, &client, &token, &url, &body).await?;
+    Ok(())
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AssetUploadMeta {
@@ -614,6 +631,7 @@ pub fn run() {
             create_item,
             update_item,
             publish_item,
+            publish_items,
             upload_asset,
             pick_files
         ])

@@ -1,5 +1,12 @@
 import { buildDynamicForm, readFormValues, itemDisplayName } from "./field-renderer.js";
-import { formatDate, filterItemsByQuery, computePagination, paginateItems } from "./items-helpers.js";
+import {
+  formatDate,
+  filterItemsByQuery,
+  computePagination,
+  paginateItems,
+  sortItems,
+  toggleSortState,
+} from "./items-helpers.js";
 import accessPolicy from "./access-policy.json";
 
 const { invoke } = window.__TAURI__.core;
@@ -18,6 +25,8 @@ let itemSearchInput, newItemBtn, itemsTbody;
 let dynamicForm, formHeading, saveDraftBtn, publishBtn, formStatus;
 let itemModal, modalCloseBtn;
 let itemsPagination, itemsPageInfo, itemsPrevBtn, itemsNextBtn;
+let sortableHeaders, itemsSelectAllCheckbox;
+let bulkActionsBar, bulkSelectedCount, bulkPublishBtn, bulkClearBtn;
 
 let currentSites = [];
 let currentCollections = [];
@@ -28,6 +37,9 @@ let currentItems = [];
 let displayedItems = [];
 let editingItemId = null;
 let itemsPage = 1;
+let sortState = { key: null, direction: "asc" };
+let selectedItemIds = new Set();
+let formSnapshot = null;
 const ITEMS_PER_PAGE = 50;
 const itemsCache = new Map();
 
@@ -202,9 +214,52 @@ function renderPaginationControls(totalItems) {
   itemsNextBtn.disabled = !hasNext;
 }
 
+function updateSortIndicators() {
+  for (const th of sortableHeaders) {
+    const indicator = th.querySelector(".sort-indicator");
+    if (th.dataset.sortKey === sortState.key) {
+      indicator.textContent = sortState.direction === "asc" ? "▲" : "▼";
+    } else {
+      indicator.textContent = "";
+    }
+  }
+}
+
+function computeVisibleItems() {
+  return sortItems(filterItemsByQuery(currentItems, itemSearchInput.value), sortState);
+}
+
+function updateBulkActionsBar() {
+  if (isLockedId(currentCollectionId) || selectedItemIds.size === 0) {
+    bulkActionsBar.classList.add("hidden");
+    return;
+  }
+  bulkActionsBar.classList.remove("hidden");
+  bulkSelectedCount.textContent = `${selectedItemIds.size} selected`;
+}
+
+function syncSelectionUI() {
+  const rowCheckboxes = itemsTbody.querySelectorAll("[data-item-id]");
+  for (const checkbox of rowCheckboxes) {
+    checkbox.checked = selectedItemIds.has(checkbox.dataset.itemId);
+  }
+
+  if (rowCheckboxes.length === 0) {
+    itemsSelectAllCheckbox.checked = false;
+    itemsSelectAllCheckbox.indeterminate = false;
+  } else {
+    const selectedOnPage = Array.from(rowCheckboxes).filter((c) => c.checked).length;
+    itemsSelectAllCheckbox.checked = selectedOnPage === rowCheckboxes.length;
+    itemsSelectAllCheckbox.indeterminate = selectedOnPage > 0 && selectedOnPage < rowCheckboxes.length;
+  }
+
+  updateBulkActionsBar();
+}
+
 function renderItemsTable(items) {
   displayedItems = items;
   renderPaginationControls(items.length);
+  updateSortIndicators();
 
   const tableWrap = itemsTbody.closest(".table-wrap");
   if (tableWrap) tableWrap.scrollTop = 0;
@@ -213,18 +268,40 @@ function renderItemsTable(items) {
   if (items.length === 0) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
-    cell.colSpan = 5;
+    cell.colSpan = 6;
     cell.textContent = "No items match.";
     cell.className = "empty-cell";
     row.appendChild(cell);
     itemsTbody.appendChild(row);
+    syncSelectionUI();
     return;
   }
 
+  const locked = isLockedId(currentCollectionId);
   const pageItems = paginateItems(items, itemsPage, ITEMS_PER_PAGE);
   for (const item of pageItems) {
     const row = document.createElement("tr");
     row.addEventListener("click", () => guardedOpenItemModal(item));
+
+    const checkboxCell = document.createElement("td");
+    checkboxCell.className = "checkbox-col";
+    if (!locked) {
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.dataset.itemId = item.id;
+      checkbox.checked = selectedItemIds.has(item.id);
+      checkbox.addEventListener("click", (e) => e.stopPropagation());
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) {
+          selectedItemIds.add(item.id);
+        } else {
+          selectedItemIds.delete(item.id);
+        }
+        syncSelectionUI();
+      });
+      checkboxCell.appendChild(checkbox);
+    }
+    row.appendChild(checkboxCell);
 
     const nameCell = document.createElement("td");
     nameCell.textContent = itemDisplayName(item);
@@ -258,12 +335,19 @@ function renderItemsTable(items) {
 
     itemsTbody.appendChild(row);
   }
+
+  syncSelectionUI();
 }
 
 function applyItemSearch({ resetPage = true } = {}) {
-  const filtered = filterItemsByQuery(currentItems, itemSearchInput.value);
   if (resetPage) itemsPage = 1;
-  renderItemsTable(filtered);
+  renderItemsTable(computeVisibleItems());
+}
+
+function applySort(key) {
+  sortState = toggleSortState(sortState, key);
+  itemsPage = 1;
+  renderItemsTable(computeVisibleItems());
 }
 
 function goToItemsPage(page) {
@@ -271,10 +355,46 @@ function goToItemsPage(page) {
   renderItemsTable(displayedItems);
 }
 
+function handleSelectAllOnPage() {
+  const rowCheckboxes = itemsTbody.querySelectorAll("[data-item-id]");
+  const shouldSelect = itemsSelectAllCheckbox.checked;
+  for (const checkbox of rowCheckboxes) {
+    if (shouldSelect) {
+      selectedItemIds.add(checkbox.dataset.itemId);
+    } else {
+      selectedItemIds.delete(checkbox.dataset.itemId);
+    }
+  }
+  syncSelectionUI();
+}
+
+async function handleBulkPublish() {
+  const schema = activeSchema();
+  if (!schema || isLockedId(currentCollectionId) || selectedItemIds.size === 0) return;
+
+  const itemIds = Array.from(selectedItemIds);
+  setStatus(itemsStatus, `Publishing ${itemIds.length} item(s)...`, "loading");
+  try {
+    await invoke("publish_items", { collectionId: schema.id, itemIds });
+    selectedItemIds.clear();
+    setStatus(itemsStatus, `Published ${itemIds.length} item(s).`, "success");
+    await loadItems(schema.id);
+  } catch (err) {
+    setStatus(itemsStatus, String(err), "error");
+  }
+}
+
+function handleBulkClear() {
+  selectedItemIds.clear();
+  syncSelectionUI();
+}
+
 async function loadItems(collectionId) {
   itemsTbody.innerHTML = "";
   itemSearchInput.value = "";
   itemsPage = 1;
+  sortState = { key: null, direction: "asc" };
+  selectedItemIds.clear();
   setStatus(itemsStatus, "Loading items...", "loading");
   try {
     const items = await getItemsCached(collectionId, { forceRefresh: true });
@@ -309,6 +429,20 @@ function resetEditingState() {
   editingItemId = null;
 }
 
+function snapshotForm() {
+  const schema = activeSchema();
+  if (!schema) return null;
+  return JSON.stringify(readFormValues(dynamicForm, schema));
+}
+
+function isFormDirty() {
+  return formSnapshot !== null && snapshotForm() !== formSnapshot;
+}
+
+function confirmDiscardIfDirty() {
+  return !isFormDirty() || window.confirm("You have unsaved changes. Discard them?");
+}
+
 async function openItemModal(item) {
   const schema = activeSchema();
   if (!schema) return;
@@ -318,11 +452,17 @@ async function openItemModal(item) {
   setStatus(formStatus, "", "");
 
   await renderForm(schema, item ? item.fieldData : {});
+  formSnapshot = snapshotForm();
   itemModal.showModal();
 }
 
 function closeItemModal() {
+  formSnapshot = null;
   itemModal.close();
+}
+
+function requestCloseItemModal() {
+  if (confirmDiscardIfDirty()) closeItemModal();
 }
 
 async function handleSaveItem(publish) {
@@ -545,6 +685,12 @@ window.addEventListener("DOMContentLoaded", () => {
   itemsPageInfo = document.querySelector("#items-page-info");
   itemsPrevBtn = document.querySelector("#items-prev-btn");
   itemsNextBtn = document.querySelector("#items-next-btn");
+  sortableHeaders = document.querySelectorAll("#items-table th[data-sort-key]");
+  itemsSelectAllCheckbox = document.querySelector("#items-select-all");
+  bulkActionsBar = document.querySelector("#bulk-actions-bar");
+  bulkSelectedCount = document.querySelector("#bulk-selected-count");
+  bulkPublishBtn = document.querySelector("#bulk-publish-btn");
+  bulkClearBtn = document.querySelector("#bulk-clear-btn");
 
   dynamicForm = document.querySelector("#dynamic-form");
   formHeading = document.querySelector("#form-heading");
@@ -561,10 +707,19 @@ window.addEventListener("DOMContentLoaded", () => {
   newItemBtn.addEventListener("click", () => guardedOpenItemModal(null));
   saveDraftBtn.addEventListener("click", () => handleSaveItem(false));
   publishBtn.addEventListener("click", () => handleSaveItem(true));
-  modalCloseBtn.addEventListener("click", closeItemModal);
+  modalCloseBtn.addEventListener("click", requestCloseItemModal);
+  itemModal.addEventListener("cancel", (e) => {
+    if (!confirmDiscardIfDirty()) e.preventDefault();
+  });
   itemSearchInput.addEventListener("input", () => applyItemSearch());
   itemsPrevBtn.addEventListener("click", () => goToItemsPage(itemsPage - 1));
   itemsNextBtn.addEventListener("click", () => goToItemsPage(itemsPage + 1));
+  for (const th of sortableHeaders) {
+    th.addEventListener("click", () => applySort(th.dataset.sortKey));
+  }
+  itemsSelectAllCheckbox.addEventListener("change", handleSelectAllOnPage);
+  bulkPublishBtn.addEventListener("click", handleBulkPublish);
+  bulkClearBtn.addEventListener("click", handleBulkClear);
 
   tryAutoReconnect();
 });

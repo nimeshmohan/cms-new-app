@@ -69,17 +69,25 @@
               <div id="schema-tabs" class="tabs"></div>
               <p id="schema-status" class="status"></p>
               <p id="items-status" class="status"></p>
+              <div id="bulk-actions-bar" class="bulk-actions-bar hidden">
+                <span id="bulk-selected-count"></span>
+                <button id="bulk-publish-btn" type="button">Publish selected</button>
+                <button id="bulk-clear-btn" type="button" class="secondary">Clear selection</button>
+              </div>
             </div>
 
             <div class="table-wrap">
               <table id="items-table" class="items-table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Published</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Modified</th>
+                    <th class="checkbox-col">
+                      <input type="checkbox" id="items-select-all" title="Select all on this page" />
+                    </th>
+                    <th data-sort-key="name">Name<span class="sort-indicator"></span></th>
+                    <th data-sort-key="published">Published<span class="sort-indicator"></span></th>
+                    <th data-sort-key="status">Status<span class="sort-indicator"></span></th>
+                    <th data-sort-key="created">Created<span class="sort-indicator"></span></th>
+                    <th data-sort-key="modified">Modified<span class="sort-indicator"></span></th>
                   </tr>
                 </thead>
                 <tbody id="items-tbody"></tbody>

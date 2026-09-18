@@ -39,3 +39,35 @@ export function paginateItems(items, page, pageSize) {
   const start = (clampedPage - 1) * pageSize;
   return items.slice(start, start + pageSize);
 }
+
+function timeOrMinusInfinity(iso) {
+  if (!iso) return -Infinity;
+  const t = new Date(iso).getTime();
+  return Number.isNaN(t) ? -Infinity : t;
+}
+
+export const SORT_ACCESSORS = {
+  name: (item) => itemDisplayName(item).toLowerCase(),
+  published: (item) => timeOrMinusInfinity(item.lastPublished),
+  status: (item) => (item.isDraft ? "draft" : "published"),
+  created: (item) => timeOrMinusInfinity(item.createdOn),
+  modified: (item) => timeOrMinusInfinity(item.lastUpdated),
+};
+
+export function toggleSortState(current, key) {
+  if (!current || current.key !== key) return { key, direction: "asc" };
+  return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+}
+
+export function sortItems(items, sortState) {
+  const accessor = sortState && SORT_ACCESSORS[sortState.key];
+  if (!accessor) return items;
+  const sign = sortState.direction === "desc" ? -1 : 1;
+  return [...items].sort((a, b) => {
+    const av = accessor(a);
+    const bv = accessor(b);
+    if (av < bv) return -1 * sign;
+    if (av > bv) return 1 * sign;
+    return 0;
+  });
+}

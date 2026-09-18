@@ -16,6 +16,7 @@ let schemaTitle, schemaTabs, schemaStatus, itemsStatus;
 let itemSearchInput, newItemBtn, itemsTbody;
 let dynamicForm, formHeading, saveDraftBtn, publishBtn, formStatus;
 let itemModal, modalCloseBtn;
+let itemsPagination, itemsPageInfo, itemsPrevBtn, itemsNextBtn;
 
 let currentSites = [];
 let currentCollections = [];
@@ -23,7 +24,10 @@ let currentCollectionId = null;
 let currentSchemaBundle = null;
 let activeSchemaId = null;
 let currentItems = [];
+let displayedItems = [];
 let editingItemId = null;
+let itemsPage = 1;
+const ITEMS_PER_PAGE = 50;
 const itemsCache = new Map();
 
 function setStatus(el, message, kind) {
@@ -200,7 +204,27 @@ function guardedOpenItemModal(item) {
   openItemModal(item);
 }
 
+function renderPaginationControls(totalItems) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / ITEMS_PER_PAGE));
+  if (itemsPage > totalPages) itemsPage = totalPages;
+
+  if (totalItems === 0) {
+    itemsPagination.classList.add("hidden");
+    return;
+  }
+
+  itemsPagination.classList.remove("hidden");
+  const start = (itemsPage - 1) * ITEMS_PER_PAGE + 1;
+  const end = Math.min(itemsPage * ITEMS_PER_PAGE, totalItems);
+  itemsPageInfo.textContent = `${start}–${end} of ${totalItems}`;
+  itemsPrevBtn.disabled = itemsPage <= 1;
+  itemsNextBtn.disabled = itemsPage >= totalPages;
+}
+
 function renderItemsTable(items) {
+  displayedItems = items;
+  renderPaginationControls(items.length);
+
   itemsTbody.innerHTML = "";
   if (items.length === 0) {
     const row = document.createElement("tr");
@@ -212,7 +236,10 @@ function renderItemsTable(items) {
     itemsTbody.appendChild(row);
     return;
   }
-  for (const item of items) {
+
+  const start = (itemsPage - 1) * ITEMS_PER_PAGE;
+  const pageItems = items.slice(start, start + ITEMS_PER_PAGE);
+  for (const item of pageItems) {
     const row = document.createElement("tr");
     row.addEventListener("click", () => guardedOpenItemModal(item));
 
@@ -250,22 +277,29 @@ function renderItemsTable(items) {
   }
 }
 
-function applyItemSearch() {
+function applyItemSearch({ resetPage = true } = {}) {
   const query = itemSearchInput.value.trim().toLowerCase();
   const filtered = query
     ? currentItems.filter((item) => itemDisplayName(item).toLowerCase().includes(query))
     : currentItems;
+  if (resetPage) itemsPage = 1;
   renderItemsTable(filtered);
+}
+
+function goToItemsPage(page) {
+  itemsPage = page;
+  renderItemsTable(displayedItems);
 }
 
 async function loadItems(collectionId) {
   itemsTbody.innerHTML = "";
   itemSearchInput.value = "";
+  itemsPage = 1;
   setStatus(itemsStatus, "Loading items...", "loading");
   try {
     const items = await getItemsCached(collectionId, { forceRefresh: true });
     currentItems = items;
-    setStatus(itemsStatus, "", "");
+    setStatus(itemsStatus, items.length === 0 ? "" : `${items.length} item${items.length === 1 ? "" : "s"} loaded.`, "");
     renderItemsTable(items);
   } catch (err) {
     setStatus(itemsStatus, String(err), "error");
@@ -527,6 +561,10 @@ window.addEventListener("DOMContentLoaded", () => {
   itemSearchInput = document.querySelector("#item-search");
   newItemBtn = document.querySelector("#new-item-btn");
   itemsTbody = document.querySelector("#items-tbody");
+  itemsPagination = document.querySelector("#items-pagination");
+  itemsPageInfo = document.querySelector("#items-page-info");
+  itemsPrevBtn = document.querySelector("#items-prev-btn");
+  itemsNextBtn = document.querySelector("#items-next-btn");
 
   dynamicForm = document.querySelector("#dynamic-form");
   formHeading = document.querySelector("#form-heading");
@@ -544,7 +582,9 @@ window.addEventListener("DOMContentLoaded", () => {
   saveDraftBtn.addEventListener("click", () => handleSaveItem(false));
   publishBtn.addEventListener("click", () => handleSaveItem(true));
   modalCloseBtn.addEventListener("click", closeItemModal);
-  itemSearchInput.addEventListener("input", applyItemSearch);
+  itemSearchInput.addEventListener("input", () => applyItemSearch());
+  itemsPrevBtn.addEventListener("click", () => goToItemsPage(itemsPage - 1));
+  itemsNextBtn.addEventListener("click", () => goToItemsPage(itemsPage + 1));
 
   tryAutoReconnect();
 });

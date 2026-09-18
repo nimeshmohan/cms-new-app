@@ -266,17 +266,44 @@ pub struct CmsItem {
     pub field_data: serde_json::Value,
 }
 
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ItemsPagination {
+    #[serde(default)]
+    total: u64,
+}
+
 #[derive(serde::Deserialize)]
 struct ItemsResponse {
     items: Vec<CmsItem>,
+    #[serde(default)]
+    pagination: ItemsPagination,
 }
+
+const ITEMS_PAGE_SIZE: u64 = 100;
 
 #[tauri::command]
 async fn get_items(app: tauri::AppHandle, collection_id: String) -> Result<Vec<CmsItem>, String> {
     let token = get_token()?;
-    let url = format!("https://api.webflow.com/v2/collections/{collection_id}/items?limit=100");
-    let parsed: ItemsResponse = webflow_get(&app, &token, &url).await?;
-    Ok(parsed.items)
+    let mut all_items = Vec::new();
+    let mut offset = 0u64;
+
+    loop {
+        let url = format!(
+            "https://api.webflow.com/v2/collections/{collection_id}/items?limit={ITEMS_PAGE_SIZE}&offset={offset}"
+        );
+        let parsed: ItemsResponse = webflow_get(&app, &token, &url).await?;
+        let fetched = parsed.items.len() as u64;
+        all_items.extend(parsed.items);
+
+        offset += ITEMS_PAGE_SIZE;
+        let total = parsed.pagination.total;
+        if fetched == 0 || offset >= total {
+            break;
+        }
+    }
+
+    Ok(all_items)
 }
 
 #[tauri::command]

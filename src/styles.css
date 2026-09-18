@@ -516,6 +516,23 @@ button.secondary:hover {
   padding: 2em 1em !important;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1em;
+  margin: -0.6em 1.6em 1.6em;
+}
+
+.pagination.hidden {
+  display: none;
+}
+
+.pagination-info {
+  font-size: 0.85em;
+  color: var(--color-text-muted);
+}
+
 .publish-dot {
   display: inline-block;
   width: 7px;

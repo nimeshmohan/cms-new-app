@@ -225,6 +225,9 @@ function renderItemsTable(items) {
   displayedItems = items;
   renderPaginationControls(items.length);
 
+  const tableWrap = itemsTbody.closest(".table-wrap");
+  if (tableWrap) tableWrap.scrollTop = 0;
+
   itemsTbody.innerHTML = "";
   if (items.length === 0) {
     const row = document.createElement("tr");

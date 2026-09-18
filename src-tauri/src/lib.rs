@@ -5,6 +5,24 @@ use tauri::Emitter;
 const KEYRING_SERVICE: &str = "com.webflowcms.app";
 const KEYRING_ACCOUNT: &str = "webflow_api_token";
 const MAX_RATE_LIMIT_RETRIES: u32 = 4;
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS))
+        .build()
+        .expect("failed to build HTTP client")
+}
+
+fn describe_network_error(e: reqwest::Error) -> String {
+    if e.is_timeout() {
+        "The request to Webflow timed out. Check your connection and try again.".to_string()
+    } else if e.is_connect() {
+        "Could not reach Webflow. Check your internet connection and try again.".to_string()
+    } else {
+        format!("Network error: {e}")
+    }
+}
 
 async fn send_with_rate_limit_retry<T, F, Fut>(
     app: &tauri::AppHandle,
@@ -17,9 +35,7 @@ where
 {
     let mut attempt = 0u32;
     loop {
-        let resp = build_request()
-            .await
-            .map_err(|e| format!("Network error: {e}"))?;
+        let resp = build_request().await.map_err(describe_network_error)?;
 
         if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES {
             let wait_secs = resp
@@ -62,11 +78,17 @@ fn keyring_entry() -> Result<keyring::Entry, String> {
 
 async fn webflow_get<T: serde::de::DeserializeOwned>(
     app: &tauri::AppHandle,
+    client: &reqwest::Client,
     token: &str,
     url: &str,
 ) -> Result<T, String> {
-    let client = reqwest::Client::new();
     send_with_rate_limit_retry(app, || client.get(url).bearer_auth(token).send()).await
+}
+
+#[derive(serde::Deserialize)]
+struct WebflowErrorBody {
+    #[serde(default)]
+    message: Option<String>,
 }
 
 async fn handle_response<T: serde::de::DeserializeOwned>(
@@ -78,48 +100,67 @@ async fn handle_response<T: serde::de::DeserializeOwned>(
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Webflow API error ({status}): {body}"));
+        let message = serde_json::from_str::<WebflowErrorBody>(&body)
+            .ok()
+            .and_then(|e| e.message)
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| {
+                if body.trim().is_empty() {
+                    "No further details were provided.".to_string()
+                } else {
+                    body.clone()
+                }
+            });
+        return Err(format!("Webflow rejected the request ({status}): {message}"));
     }
     resp.json::<T>()
         .await
-        .map_err(|e| format!("Failed to parse Webflow response: {e}"))
+        .map_err(|e| format!("Webflow returned a response we couldn't understand: {e}"))
 }
 
 async fn webflow_post<T: serde::de::DeserializeOwned>(
     app: &tauri::AppHandle,
+    client: &reqwest::Client,
     token: &str,
     url: &str,
     body: &serde_json::Value,
 ) -> Result<T, String> {
-    let client = reqwest::Client::new();
     send_with_rate_limit_retry(app, || client.post(url).bearer_auth(token).json(body).send()).await
 }
 
 async fn webflow_patch<T: serde::de::DeserializeOwned>(
     app: &tauri::AppHandle,
+    client: &reqwest::Client,
     token: &str,
     url: &str,
     body: &serde_json::Value,
 ) -> Result<T, String> {
-    let client = reqwest::Client::new();
     send_with_rate_limit_retry(app, || client.patch(url).bearer_auth(token).json(body).send())
         .await
 }
 
-async fn fetch_sites(app: &tauri::AppHandle, token: &str) -> Result<Vec<WebflowSite>, String> {
+async fn fetch_sites(
+    app: &tauri::AppHandle,
+    client: &reqwest::Client,
+    token: &str,
+) -> Result<Vec<WebflowSite>, String> {
     let parsed: SitesResponse =
-        webflow_get(app, token, "https://api.webflow.com/v2/sites").await?;
+        webflow_get(app, client, token, "https://api.webflow.com/v2/sites").await?;
     Ok(parsed.sites)
 }
 
 #[tauri::command]
-async fn connect_with_token(app: tauri::AppHandle, token: String) -> Result<Vec<WebflowSite>, String> {
+async fn connect_with_token(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+    token: String,
+) -> Result<Vec<WebflowSite>, String> {
     let token = token.trim().to_string();
     if token.is_empty() {
         return Err("Token cannot be empty.".to_string());
     }
 
-    let sites = fetch_sites(&app, &token).await?;
+    let sites = fetch_sites(&app, &client, &token).await?;
 
     let entry = keyring_entry()?;
     entry
@@ -130,9 +171,12 @@ async fn connect_with_token(app: tauri::AppHandle, token: String) -> Result<Vec<
 }
 
 #[tauri::command]
-async fn try_reconnect(app: tauri::AppHandle) -> Result<Vec<WebflowSite>, String> {
+async fn try_reconnect(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+) -> Result<Vec<WebflowSite>, String> {
     let token = get_token()?;
-    fetch_sites(&app, &token).await
+    fetch_sites(&app, &client, &token).await
 }
 
 fn get_token() -> Result<String, String> {
@@ -160,11 +204,12 @@ struct CollectionsResponse {
 #[tauri::command]
 async fn get_collections(
     app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
     site_id: String,
 ) -> Result<Vec<CollectionSummary>, String> {
     let token = get_token()?;
     let url = format!("https://api.webflow.com/v2/sites/{site_id}/collections");
-    let parsed: CollectionsResponse = webflow_get(&app, &token, &url).await?;
+    let parsed: CollectionsResponse = webflow_get(&app, &client, &token, &url).await?;
     Ok(parsed.collections)
 }
 
@@ -230,16 +275,17 @@ fn referenced_collection_ids(schema: &CollectionSchema) -> Vec<String> {
 #[tauri::command]
 async fn get_collection_schema_bundle(
     app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
     collection_id: String,
 ) -> Result<SchemaBundle, String> {
     let token = get_token()?;
     let url = format!("https://api.webflow.com/v2/collections/{collection_id}");
-    let main: CollectionSchema = webflow_get(&app, &token, &url).await?;
+    let main: CollectionSchema = webflow_get(&app, &client, &token, &url).await?;
 
     let mut referenced = Vec::new();
     for ref_id in referenced_collection_ids(&main) {
         let ref_url = format!("https://api.webflow.com/v2/collections/{ref_id}");
-        match webflow_get::<CollectionSchema>(&app, &token, &ref_url).await {
+        match webflow_get::<CollectionSchema>(&app, &client, &token, &ref_url).await {
             Ok(schema) => referenced.push(schema),
             Err(e) => eprintln!("Failed to fetch referenced collection {ref_id}: {e}"),
         }
@@ -283,7 +329,11 @@ struct ItemsResponse {
 const ITEMS_PAGE_SIZE: u64 = 100;
 
 #[tauri::command]
-async fn get_items(app: tauri::AppHandle, collection_id: String) -> Result<Vec<CmsItem>, String> {
+async fn get_items(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+    collection_id: String,
+) -> Result<Vec<CmsItem>, String> {
     let token = get_token()?;
     let mut all_items = Vec::new();
     let mut offset = 0u64;
@@ -292,7 +342,7 @@ async fn get_items(app: tauri::AppHandle, collection_id: String) -> Result<Vec<C
         let url = format!(
             "https://api.webflow.com/v2/collections/{collection_id}/items?limit={ITEMS_PAGE_SIZE}&offset={offset}"
         );
-        let parsed: ItemsResponse = webflow_get(&app, &token, &url).await?;
+        let parsed: ItemsResponse = webflow_get(&app, &client, &token, &url).await?;
         let fetched = parsed.items.len() as u64;
         all_items.extend(parsed.items);
 
@@ -309,6 +359,7 @@ async fn get_items(app: tauri::AppHandle, collection_id: String) -> Result<Vec<C
 #[tauri::command]
 async fn create_item(
     app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
     collection_id: String,
     field_data: serde_json::Value,
     is_draft: bool,
@@ -320,12 +371,13 @@ async fn create_item(
         "isArchived": false,
         "fieldData": field_data,
     });
-    webflow_post(&app, &token, &url, &body).await
+    webflow_post(&app, &client, &token, &url, &body).await
 }
 
 #[tauri::command]
 async fn update_item(
     app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
     collection_id: String,
     item_id: String,
     field_data: serde_json::Value,
@@ -337,15 +389,20 @@ async fn update_item(
         "isDraft": is_draft,
         "fieldData": field_data,
     });
-    webflow_patch(&app, &token, &url, &body).await
+    webflow_patch(&app, &client, &token, &url, &body).await
 }
 
 #[tauri::command]
-async fn publish_item(app: tauri::AppHandle, collection_id: String, item_id: String) -> Result<(), String> {
+async fn publish_item(
+    app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
+    collection_id: String,
+    item_id: String,
+) -> Result<(), String> {
     let token = get_token()?;
     let url = format!("https://api.webflow.com/v2/collections/{collection_id}/items/publish");
     let body = serde_json::json!({ "itemIds": [item_id] });
-    let _: serde_json::Value = webflow_post(&app, &token, &url, &body).await?;
+    let _: serde_json::Value = webflow_post(&app, &client, &token, &url, &body).await?;
     Ok(())
 }
 
@@ -382,6 +439,7 @@ fn guess_mime(file_name: &str) -> &'static str {
 #[tauri::command]
 async fn upload_asset(
     app: tauri::AppHandle,
+    client: tauri::State<'_, reqwest::Client>,
     site_id: String,
     file_path: String,
 ) -> Result<UploadedAsset, String> {
@@ -397,7 +455,7 @@ async fn upload_asset(
 
     let meta_url = format!("https://api.webflow.com/v2/sites/{site_id}/assets");
     let meta_body = serde_json::json!({ "fileName": file_name, "fileHash": hash });
-    let meta: AssetUploadMeta = webflow_post(&app, &token, &meta_url, &meta_body).await?;
+    let meta: AssetUploadMeta = webflow_post(&app, &client, &token, &meta_url, &meta_body).await?;
 
     let mut form = reqwest::multipart::Form::new();
     for (key, value) in &meta.upload_details {
@@ -410,18 +468,22 @@ async fn upload_asset(
         .map_err(|e| format!("Invalid file type: {e}"))?;
     form = form.part("file", part);
 
-    let client = reqwest::Client::new();
     let resp = client
         .post(&meta.upload_url)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("Asset upload failed: {e}"))?;
+        .map_err(describe_network_error)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(format!("Asset storage rejected upload ({status}): {body}"));
+        let detail = if body.trim().is_empty() {
+            "No further details were provided.".to_string()
+        } else {
+            body
+        };
+        return Err(format!("Asset storage rejected the upload ({status}): {detail}"));
     }
 
     Ok(UploadedAsset {
@@ -514,6 +576,7 @@ fn disconnect() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(build_http_client())
         .invoke_handler(tauri::generate_handler![
             connect_with_token,
             try_reconnect,
